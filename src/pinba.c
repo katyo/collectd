@@ -34,6 +34,14 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
+#ifdef PINBA_USE_SELECT
+#  include <sys/select.h>
+#endif
+
+#ifdef PINBA_USE_POLL
+#  include <sys/poll.h>
+#endif
+
 #include "pinba.pb-c.h"
 
 typedef uint8_t u_char;
@@ -56,10 +64,9 @@ struct _pinba_statres_ {
   double mem_peak;
 };
 
-typedef struct _pinba_socket_ pinba_socket;
-struct _pinba_socket_ {
+typedef struct _pinba_inst_ pinba_inst;
+struct _pinba_inst_ {
   int listen_sock;
-  struct event *accept_event;
 };
 
 typedef double pinba_time;
@@ -76,8 +83,7 @@ now (void)
 }
 
 static pthread_rwlock_t temp_lock;
-static struct event_base *temp_base = NULL;
-static pinba_socket *temp_sock = NULL;
+static pinba_inst *temp_inst = NULL;
 static pthread_t temp_thrd;
 
 typedef struct _pinba_statnode_ pinba_statnode;
@@ -178,8 +184,7 @@ service_statnode_free (void)
   if(stat_nodes_count < 1)
     return;
 
-  for (i = 0; i < stat_nodes_count; i++)
-  {
+  for (i = 0; i < stat_nodes_count; i++) {
     sfree (stat_nodes[i].name);
     sfree (stat_nodes[i].host);
     sfree (stat_nodes[i].server);
@@ -299,33 +304,66 @@ pinba_main (void *arg)
   DEBUG("entering listen-loop..");
   
   service_status=1;
-  event_base_dispatch(temp_base);
+  
+  { // select dispatch
+#ifdef PINBA_USE_SELECT
+    int rc = 0;
+    struct fd_set set;
+    
+    for (;;) {
+      FD_ZERO(&master_set);
+      FD_SET(temp_inst->listen_sock, &set);
+      
+      rc = select(2, &working_set, NULL, NULL, NULL);
+      if (rc < 0) {
+	ERROR("pinba-plugin: select() failed (%s)", strerror(errno));
+	break;
+      }
+      if (FD_ISSET(temp_inst->listen_sock, &set)) {
+	pinba_udp_read_callback_fn(temp_inst->listen_sock);
+      }
+    }
+#endif
+    
+#ifdef PINBA_USE_POLL
+    int rc = 0;
+    struct pollfd set;
+    set.fd = temp_inst->listen_sock;
+    set.events = POLLIN;
+    
+    for (;;) {
+      set.revents = 0;
+      rc = poll(&set, 1, -1);
+      if (rc < 0) {
+	ERROR("pinba-plugin: poll() failed (%s)", strerror(errno));
+	break;
+      }
+      if (set.revents & set.events) {
+	pinba_udp_read_callback_fn(temp_inst->listen_sock);
+      }
+    }
+#endif
+  }
+  
+  pinba_inst_free(temp_inst);
+  temp_inst = NULL;
   
   /* unreachable */
   return NULL;
 }
 
 static void
-pinba_socket_free (pinba_socket *socket) /* {{{ */
+pinba_inst_free (pinba_inst *inst)
 {
-  if (!socket)
-    return;
+  if (!inst) return;
   
-  if (socket->listen_sock >= 0)
-  {
-    close(socket->listen_sock);
-    socket->listen_sock = -1;
+  if (inst->listen_sock >= 0) {
+    close(inst->listen_sock);
+    inst->listen_sock = -1;
   }
   
-  if (socket->accept_event)
-  {
-    event_del(socket->accept_event);
-    free(socket->accept_event);
-    socket->accept_event = NULL;
-  }
-  
-  free(socket);
-} /* }}} void pinba_socket_free */
+  free(inst);
+}
 
 static int
 pinba_process_stats_packet (const unsigned char *buf,
@@ -347,9 +385,7 @@ pinba_process_stats_packet (const unsigned char *buf,
 }
 
 static void
-pinba_udp_read_callback_fn (int sock,
-			    short event,
-			    void *arg)
+pinba_udp_read_callback_fn (int sock)
 {
   if (event & EV_READ) {
     int ret;
@@ -373,12 +409,12 @@ pinba_udp_read_callback_fn (int sock,
   }
 }
 
-static pinba_socket *
-pinba_socket_open (const char *ip,
-		   int listen_port)
+static pinba_inst *
+pinba_inst_open (const char *ip,
+		 int listen_port)
 {
   struct sockaddr_in addr;
-  pinba_socket *s;
+  pinba_inst *s;
   int sfd, flags, yes = 1;
   
   if ((sfd = socket(AF_INET, SOCK_DGRAM, 0)) == -1) {
@@ -396,7 +432,7 @@ pinba_socket_open (const char *ip,
     return NULL;
   }
   
-  s = (pinba_socket *)calloc(1, sizeof(pinba_socket));
+  s = (pinba_inst *)calloc(1, sizeof(pinba_inst));
   if (!s) {
     return NULL;
   }
@@ -419,21 +455,10 @@ pinba_socket_open (const char *ip,
   }
   
   if (bind(s->listen_sock, (struct sockaddr *)&addr, sizeof(addr))) {
-    pinba_socket_free(s);
+    pinba_inst_free(s);
     ERROR("bind() failed: %s (%d)", strerror(errno), errno);
     return NULL;
   }
-  
-  s->accept_event = (struct event *)calloc(1, sizeof(struct event));
-  if (!s->accept_event) {
-    ERROR("calloc() failed: %s (%d)", strerror(errno), errno);
-    pinba_socket_free(s);
-    return NULL;
-  }
-  
-  event_set(s->accept_event, s->listen_sock, EV_READ | EV_PERSIST, pinba_udp_read_callback_fn, s);
-  event_base_set(temp_base, s->accept_event);
-  event_add(s->accept_event, NULL);
   
   return s;
 }
@@ -442,14 +467,12 @@ static int
 service_cleanup (void)
 {
   DEBUG("closing socket..");
-  if(temp_sock){
+  if(temp_inst){
     pthread_rwlock_wrlock(&temp_lock);
-    pinba_socket_free(temp_sock);
+    pinba_inst_free(temp_sock);
     pthread_rwlock_unlock(&temp_lock);
+    temp_inst = NULL;
   }
-  
-  DEBUG("shutdowning event..");
-  event_base_free(temp_base);
   
   DEBUG("shutting down..");
 
@@ -461,15 +484,11 @@ service_start(void)
 {
   DEBUG("starting up..");
   
-  DEBUG("initializing event..");
-  temp_base = event_base_new();
-  
   DEBUG("opening socket..");
   
-  temp_sock = pinba_socket_open(service_address, service_port);
+  temp_inst = pinba_inst_open(service_address, service_port);
   
-  if (!temp_sock) {
-    service_cleanup();
+  if (!temp_inst) {
     return 1;
   }
   

@@ -4298,7 +4298,6 @@ AC_PLUGIN([onewire],     [$with_libowcapi],    [OneWire sensor statistics])
 AC_PLUGIN([openvpn],     [yes],                [OpenVPN client statistics])
 AC_PLUGIN([oracle],      [$with_oracle],       [Oracle plugin])
 AC_PLUGIN([perl],        [$plugin_perl],       [Embed a Perl interpreter])
-# FIXME: Check for libevent, too.
 AC_PLUGIN([pinba],       [$have_protoc_c],     [Pinba statistics])
 AC_PLUGIN([ping],        [$with_liboping],     [Network latency statistics])
 AC_PLUGIN([postgresql],  [$with_libpq],        [PostgreSQL database statistics])
@@ -4541,7 +4540,6 @@ Configuration:
     libxml2 . . . . . . . $with_libxml2
     libxmms . . . . . . . $with_libxmms
     libyajl . . . . . . . $with_libyajl
-    libevent  . . . . . . $with_libevent
     protobuf-c  . . . . . $have_protoc_c
     oracle  . . . . . . . $with_oracle
     python  . . . . . . . $with_python
