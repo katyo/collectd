@@ -1,6 +1,7 @@
 /**
- * collectd - src/pinba.c
- * Copyright (c) 2010       Phoenix Kayo
+ * collectd - src/pinba.c   (based on code from pinba_engine 0.0.5)
+ * Copyright (C) 2007-2009  Antony Dovgal
+ * Copyright (C) 2010       Phoenix Kayo
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
@@ -319,110 +320,12 @@ pinba_inst_free (pinba_inst *inst)
   if (!inst) return;
   
   if (inst->listen_sock >= 0) {
+    DEBUG("closing socket..");
     close(inst->listen_sock);
     inst->listen_sock = -1;
   }
   
   free(inst);
-}
-
-static void
-pinba_udp_read_callback_fn (int sock);
-
-static void *
-pinba_main (void *arg)
-{
-  DEBUG("entering listen-loop..");
-  
-  service_status=1;
-  
-  { // select dispatch
-#ifdef PINBA_USE_SELECT
-    int rc = 0;
-    fd_set set;
-    
-    for (;;) {
-      FD_ZERO(&set);
-      FD_SET(temp_inst->listen_sock, &set);
-      
-      rc = select(2, &set, NULL, NULL, NULL);
-      if (rc < 0) {
-	ERROR("pinba-plugin: select() failed (%s)", strerror(errno));
-	break;
-      }
-      if (FD_ISSET(temp_inst->listen_sock, &set)) {
-	pinba_udp_read_callback_fn(temp_inst->listen_sock);
-      }
-    }
-#endif
-    
-#ifdef PINBA_USE_POLL
-    int rc = 0;
-    struct pollfd set;
-    set.fd = temp_inst->listen_sock;
-    set.events = POLLIN;
-    
-    for (;;) {
-      set.revents = 0;
-      rc = poll(&set, 1, -1);
-      if (rc < 0) {
-	ERROR("pinba-plugin: poll() failed (%s)", strerror(errno));
-	break;
-      }
-      if (set.revents & set.events) {
-	pinba_udp_read_callback_fn(temp_inst->listen_sock);
-      }
-    }
-#endif
-  }
-  
-  pinba_inst_free(temp_inst);
-  temp_inst = NULL;
-  
-  /* unreachable */
-  return NULL;
-}
-
-static int
-pinba_process_stats_packet (const unsigned char *buf,
-			    int buf_len)
-{
-  Pinba__Request *request;  
-  
-  request = pinba__request__unpack(NULL, buf_len, buf);
-  
-  if (!request) {
-    return P_FAILURE;
-  } else {
-    service_process_request(request);
-    
-    pinba__request__free_unpacked(request, NULL);
-    
-    return P_SUCCESS;
-  }
-}
-
-static void
-pinba_udp_read_callback_fn (int sock)
-{
-  int ret;
-  unsigned char buf[PINBA_UDP_BUFFER_SIZE];
-  struct sockaddr_in from;
-  socklen_t fromlen = sizeof(struct sockaddr_in);
-  
-  ret = recvfrom(sock, buf, PINBA_UDP_BUFFER_SIZE-1, MSG_DONTWAIT, (struct sockaddr *)&from, &fromlen);
-  if (ret > 0) {
-    if (pinba_process_stats_packet(buf, ret) != P_SUCCESS) {
-      DEBUG("failed to parse data received from %s", inet_ntoa(from.sin_addr));
-    }
-  } else if (ret < 0) {
-    if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
-      return;
-    }
-    WARNING("recv() failed: %s (%d)", strerror(errno), errno);
-  } else {
-    WARNING("recv() returned 0");
-  }
 }
 
 static pinba_inst *
@@ -432,6 +335,8 @@ pinba_inst_open (const char *ip,
   struct sockaddr_in addr;
   pinba_inst *s;
   int sfd, flags, yes = 1;
+  
+  DEBUG("opening socket..");
   
   if ((sfd = socket(AF_INET, SOCK_DGRAM, 0)) == -1) {
     ERROR("socket() failed: %s (%d)", strerror(errno), errno);
@@ -480,9 +385,104 @@ pinba_inst_open (const char *ip,
 }
 
 static int
+pinba_process_stats_packet (const unsigned char *buf,
+			    int buf_len)
+{
+  Pinba__Request *request;  
+  
+  request = pinba__request__unpack(NULL, buf_len, buf);
+  
+  if (!request) {
+    return P_FAILURE;
+  } else {
+    service_process_request(request);
+    
+    pinba__request__free_unpacked(request, NULL);
+    
+    return P_SUCCESS;
+  }
+}
+
+static void
+pinba_udp_read (int sock)
+{
+  int ret;
+  unsigned char buf[PINBA_UDP_BUFFER_SIZE];
+  struct sockaddr_in from;
+  socklen_t fromlen = sizeof(struct sockaddr_in);
+  
+  ret = recvfrom(sock, buf, PINBA_UDP_BUFFER_SIZE-1, MSG_DONTWAIT, (struct sockaddr *)&from, &fromlen);
+  if (ret > 0) {
+    if (pinba_process_stats_packet(buf, ret) != P_SUCCESS) {
+      DEBUG("failed to parse data received from %s", inet_ntoa(from.sin_addr));
+    }
+  } else if (ret < 0) {
+    if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
+      return;
+    }
+    WARNING("recv() failed: %s (%d)", strerror(errno), errno);
+  } else {
+    WARNING("recv() returned 0");
+  }
+}
+
+static void *
+pinba_main (void *arg)
+{
+  DEBUG("entering listen-loop..");
+  
+  service_status=1;
+  
+  { // select dispatch
+#ifdef PINBA_USE_SELECT
+    int rc = 0;
+    fd_set set;
+    
+    for (;;) {
+      FD_ZERO(&set);
+      FD_SET(temp_inst->listen_sock, &set);
+      
+      rc = select(2, &set, NULL, NULL, NULL);
+      if (rc < 0) {
+	ERROR("pinba-plugin: select() failed (%s)", strerror(errno));
+	break;
+      }
+      if (FD_ISSET(temp_inst->listen_sock, &set)) {
+	pinba_udp_read(temp_inst->listen_sock);
+      }
+    }
+#endif
+    
+#ifdef PINBA_USE_POLL
+    int rc = 0;
+    struct pollfd set;
+    set.fd = temp_inst->listen_sock;
+    set.events = POLLIN;
+    
+    for (;;) {
+      set.revents = 0;
+      rc = poll(&set, 1, -1);
+      if (rc < 0) {
+	ERROR("pinba-plugin: poll() failed (%s)", strerror(errno));
+	break;
+      }
+      if (set.revents & set.events) {
+	pinba_udp_read(temp_inst->listen_sock);
+      }
+    }
+#endif
+  }
+  
+  pinba_inst_free(temp_inst);
+  temp_inst = NULL;
+  
+  /* unreachable */
+  return NULL;
+}
+
+static int
 service_cleanup (void)
 {
-  DEBUG("closing socket..");
   if(temp_inst){
     pthread_rwlock_wrlock(&temp_lock);
     pinba_inst_free(temp_inst);
@@ -499,8 +499,6 @@ static int
 service_start(void)
 {
   DEBUG("starting up..");
-  
-  DEBUG("opening socket..");
   
   temp_inst = pinba_inst_open(service_address, service_port);
   
