@@ -34,6 +34,10 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
+#if !defined(PINBA_USE_SELECT) && !defined(PINBA_USE_POLL)
+#define PINBA_USE_POLL
+#endif
+
 #ifdef PINBA_USE_SELECT
 #  include <sys/select.h>
 #endif
@@ -41,6 +45,17 @@
 #ifdef PINBA_USE_POLL
 #  include <sys/poll.h>
 #endif
+
+#ifndef PINBA_DEFAULT_HOST
+#  define PINBA_DEFAULT_HOST "127.0.0.1"
+#endif
+
+#ifndef PINBA_DEFAULT_PORT
+#  define PINBA_DEFAULT_PORT 30002
+#endif
+
+#define P_SUCCESS 0
+#define P_FAILURE -1
 
 #include "pinba.pb-c.h"
 
@@ -108,7 +123,7 @@ static unsigned int stat_nodes_count=0;
 static pinba_statnode *stat_nodes = NULL;
 
 char service_status=0;
-char *service_address = PINBA_DEFAULT_ADDRESS;
+char *service_address = PINBA_DEFAULT_HOST;
 unsigned int service_port = PINBA_DEFAULT_PORT;
 
 static void
@@ -298,6 +313,22 @@ service_process_request (Pinba__Request *request)
   pthread_rwlock_unlock(&temp_lock);
 }
 
+static void
+pinba_inst_free (pinba_inst *inst)
+{
+  if (!inst) return;
+  
+  if (inst->listen_sock >= 0) {
+    close(inst->listen_sock);
+    inst->listen_sock = -1;
+  }
+  
+  free(inst);
+}
+
+static void
+pinba_udp_read_callback_fn (int sock);
+
 static void *
 pinba_main (void *arg)
 {
@@ -308,13 +339,13 @@ pinba_main (void *arg)
   { // select dispatch
 #ifdef PINBA_USE_SELECT
     int rc = 0;
-    struct fd_set set;
+    fd_set set;
     
     for (;;) {
-      FD_ZERO(&master_set);
+      FD_ZERO(&set);
       FD_SET(temp_inst->listen_sock, &set);
       
-      rc = select(2, &working_set, NULL, NULL, NULL);
+      rc = select(2, &set, NULL, NULL, NULL);
       if (rc < 0) {
 	ERROR("pinba-plugin: select() failed (%s)", strerror(errno));
 	break;
@@ -352,19 +383,6 @@ pinba_main (void *arg)
   return NULL;
 }
 
-static void
-pinba_inst_free (pinba_inst *inst)
-{
-  if (!inst) return;
-  
-  if (inst->listen_sock >= 0) {
-    close(inst->listen_sock);
-    inst->listen_sock = -1;
-  }
-  
-  free(inst);
-}
-
 static int
 pinba_process_stats_packet (const unsigned char *buf,
 			    int buf_len)
@@ -387,25 +405,23 @@ pinba_process_stats_packet (const unsigned char *buf,
 static void
 pinba_udp_read_callback_fn (int sock)
 {
-  if (event & EV_READ) {
-    int ret;
-    unsigned char buf[PINBA_UDP_BUFFER_SIZE];
-    struct sockaddr_in from;
-    socklen_t fromlen = sizeof(struct sockaddr_in);
-    
-    ret = recvfrom(sock, buf, PINBA_UDP_BUFFER_SIZE-1, MSG_DONTWAIT, (struct sockaddr *)&from, &fromlen);
-    if (ret > 0) {
-      if (pinba_process_stats_packet(buf, ret) != P_SUCCESS) {
-	DEBUG("failed to parse data received from %s", inet_ntoa(from.sin_addr));
-      }
-    } else if (ret < 0) {
-      if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
-	return;
-      }
-      WARNING("recv() failed: %s (%d)", strerror(errno), errno);
-    } else {
-      WARNING("recv() returned 0");
+  int ret;
+  unsigned char buf[PINBA_UDP_BUFFER_SIZE];
+  struct sockaddr_in from;
+  socklen_t fromlen = sizeof(struct sockaddr_in);
+  
+  ret = recvfrom(sock, buf, PINBA_UDP_BUFFER_SIZE-1, MSG_DONTWAIT, (struct sockaddr *)&from, &fromlen);
+  if (ret > 0) {
+    if (pinba_process_stats_packet(buf, ret) != P_SUCCESS) {
+      DEBUG("failed to parse data received from %s", inet_ntoa(from.sin_addr));
     }
+  } else if (ret < 0) {
+    if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
+      return;
+    }
+    WARNING("recv() failed: %s (%d)", strerror(errno), errno);
+  } else {
+    WARNING("recv() returned 0");
   }
 }
 
@@ -469,7 +485,7 @@ service_cleanup (void)
   DEBUG("closing socket..");
   if(temp_inst){
     pthread_rwlock_wrlock(&temp_lock);
-    pinba_inst_free(temp_sock);
+    pinba_inst_free(temp_inst);
     pthread_rwlock_unlock(&temp_lock);
     temp_inst = NULL;
   }
@@ -568,7 +584,7 @@ plugin_config (oconfig_item_t *ci)
   service_statnode_begin();
   
   /* Set default values */
-  config_set(&pinba_address, PINBA_DEFAULT_ADDRESS);
+  config_set(&pinba_address, PINBA_DEFAULT_HOST);
   pinba_port = PINBA_DEFAULT_PORT;
   
   for (i = 0; i < ci->children_num; i++) {
@@ -628,6 +644,8 @@ plugin_config (oconfig_item_t *ci)
   service_statnode_end();
   
   service_config(pinba_address, pinba_port);
+
+  return 0;
 } /* int pinba_config */
 
 static int

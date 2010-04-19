@@ -47,7 +47,14 @@ AC_PROG_LEX
 AC_PROG_YACC
 PKG_PROG_PKG_CONFIG
 
-AC_CHECK_PROG([have_protoc_c], [protoc-c], [yes], [no])
+AC_CHECK_HEADER([google/protobuf-c/protobuf-c.h], [have_protoc_c_header="yes"], [have_protoc_c_header="no"])
+AC_CHECK_LIB([protobuf-c], [main], [have_protoc_c_library="yes"], [have_protoc_c_library="no"])
+AC_CHECK_PROG([have_protoc_c_compiler], [protoc-c], [yes], [no])
+
+test "x$have_protoc_c_compiler" = "xyes" \
+  -a "x$have_protoc_c_header" = "xyes" \
+  -a "x$have_protoc_c_library" = "xyes" \
+ && have_protoc_c=yes || have_protoc_c=no
 AM_CONDITIONAL(HAVE_PROTOC_C, test "x$have_protoc_c" = "xyes")
 
 AC_MSG_CHECKING([for kernel type ($host_os)])
@@ -4540,7 +4547,9 @@ Configuration:
     libxml2 . . . . . . . $with_libxml2
     libxmms . . . . . . . $with_libxmms
     libyajl . . . . . . . $with_libyajl
-    protobuf-c  . . . . . $have_protoc_c
+    protobuf-c header . . $have_protoc_c_header
+    libprotobuf-c . . . . $have_protoc_c_library
+    protobuf-c compiler . $have_protoc_c_compiler
     oracle  . . . . . . . $with_oracle
     python  . . . . . . . $with_python
 

@@ -135,6 +135,7 @@ FQDNLookup   true
 #@BUILD_PLUGIN_WRITE_HTTP_TRUE@LoadPlugin write_http
 #@BUILD_PLUGIN_XMMS_TRUE@LoadPlugin xmms
 #@BUILD_PLUGIN_ZFS_ARC_TRUE@LoadPlugin zfs_arc
+#@BUILD_PLUGIN_PINBA_TRUE@LoadPlugin pinba
 
 ##############################################################################
 # Plugin configuration                                                       #
@@ -839,6 +840,24 @@ FQDNLookup   true
 #		User "collectd"
 #		Password "weCh3ik0"
 #	</URL>
+#</Plugin>
+
+#<Plugin pinba>
+### Service listen options
+#   Address "127.0.0.1"
+#   Port 30002
+### User's view
+# <View "name">
+### Where "name" is a symbolic name of view, which will be used as
+### plugin instance and must not be "total".
+### View with name "total" exists by default and collects all data.
+#   Host "host_name_pattern"
+#   Server "server_name_pattern"
+#   Script "script_name_pattern"
+### Patterns of host, server and script for collect to this view.
+### If one of or all of this options is present, it must be string
+### pattern.
+# </View>
 #</Plugin>
 
 ##############################################################################
